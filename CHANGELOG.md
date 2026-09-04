@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.1 - 2026-09-04
+
+- Accept PE images when validating native DLLs in Windows binary packages.
+- Report native-library format mismatches separately from architecture
+  mismatches.
+
 ## 0.1.0 - 2026-09-04
 
 - Add hardened extraction and validation for binary R package archives.

@@ -49,26 +49,54 @@ fn scan(directory: &Path, expected: Architecture) -> Result<()> {
                 path.display()
             ))
         })?;
-        let matches = match kind {
-            FileKind::MachOFat32 => MachOFatFile32::parse(bytes.as_slice())
-                .map(|file| {
+        let (format, architecture_matches) = match kind {
+            FileKind::MachOFat32 => {
+                let file = MachOFatFile32::parse(bytes.as_slice()).map_err(|error| {
+                    Error::Incompatible(format!(
+                        "cannot parse native library {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                (
+                    BinaryFormat::MachO,
                     file.arches()
                         .iter()
-                        .any(|arch| arch.architecture() == expected)
-                })
-                .unwrap_or(false),
-            FileKind::MachOFat64 => MachOFatFile64::parse(bytes.as_slice())
-                .map(|file| {
+                        .any(|arch| arch.architecture() == expected),
+                )
+            }
+            FileKind::MachOFat64 => {
+                let file = MachOFatFile64::parse(bytes.as_slice()).map_err(|error| {
+                    Error::Incompatible(format!(
+                        "cannot parse native library {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                (
+                    BinaryFormat::MachO,
                     file.arches()
                         .iter()
-                        .any(|arch| arch.architecture() == expected)
-                })
-                .unwrap_or(false),
-            _ => object::File::parse(bytes.as_slice())
-                .map(|file| file.architecture() == expected && format_matches_host(file.format()))
-                .unwrap_or(false),
+                        .any(|arch| arch.architecture() == expected),
+                )
+            }
+            _ => {
+                let file = object::File::parse(bytes.as_slice()).map_err(|error| {
+                    Error::Incompatible(format!(
+                        "cannot parse native library {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                (file.format(), file.architecture() == expected)
+            }
         };
-        if !matches {
+        if let Some(expected_format) = host_binary_format()
+            && format != expected_format
+        {
+            return Err(Error::Incompatible(format!(
+                "native library {} has format {format:?}, expected {expected_format:?}",
+                path.display()
+            )));
+        }
+        if !architecture_matches {
             return Err(Error::Incompatible(format!(
                 "native library {} does not contain architecture {expected:?}",
                 path.display()
@@ -78,12 +106,12 @@ fn scan(directory: &Path, expected: Architecture) -> Result<()> {
     Ok(())
 }
 
-fn format_matches_host(format: BinaryFormat) -> bool {
+fn host_binary_format() -> Option<BinaryFormat> {
     match std::env::consts::OS {
-        "macos" => format == BinaryFormat::MachO,
-        "linux" => format == BinaryFormat::Elf,
-        "windows" => format == BinaryFormat::Coff,
-        _ => true,
+        "macos" => Some(BinaryFormat::MachO),
+        "linux" => Some(BinaryFormat::Elf),
+        "windows" => Some(BinaryFormat::Pe),
+        _ => None,
     }
 }
 
