@@ -49,26 +49,54 @@ fn scan(directory: &Path, expected: Architecture) -> Result<()> {
                 path.display()
             ))
         })?;
-        let matches = match kind {
-            FileKind::MachOFat32 => MachOFatFile32::parse(bytes.as_slice())
-                .map(|file| {
+        let (format, architecture_matches) = match kind {
+            FileKind::MachOFat32 => {
+                let file = MachOFatFile32::parse(bytes.as_slice()).map_err(|error| {
+                    Error::Incompatible(format!(
+                        "cannot parse native library {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                (
+                    BinaryFormat::MachO,
                     file.arches()
                         .iter()
-                        .any(|arch| arch.architecture() == expected)
-                })
-                .unwrap_or(false),
-            FileKind::MachOFat64 => MachOFatFile64::parse(bytes.as_slice())
-                .map(|file| {
+                        .any(|arch| arch.architecture() == expected),
+                )
+            }
+            FileKind::MachOFat64 => {
+                let file = MachOFatFile64::parse(bytes.as_slice()).map_err(|error| {
+                    Error::Incompatible(format!(
+                        "cannot parse native library {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                (
+                    BinaryFormat::MachO,
                     file.arches()
                         .iter()
-                        .any(|arch| arch.architecture() == expected)
-                })
-                .unwrap_or(false),
-            _ => object::File::parse(bytes.as_slice())
-                .map(|file| file.architecture() == expected && format_matches_host(file.format()))
-                .unwrap_or(false),
+                        .any(|arch| arch.architecture() == expected),
+                )
+            }
+            _ => {
+                let file = object::File::parse(bytes.as_slice()).map_err(|error| {
+                    Error::Incompatible(format!(
+                        "cannot parse native library {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                (file.format(), file.architecture() == expected)
+            }
         };
-        if !matches {
+        if let Some(expected_format) = host_binary_format()
+            && format != expected_format
+        {
+            return Err(Error::Incompatible(format!(
+                "native library {} has format {format:?}, expected {expected_format:?}",
+                path.display()
+            )));
+        }
+        if !architecture_matches {
             return Err(Error::Incompatible(format!(
                 "native library {} does not contain architecture {expected:?}",
                 path.display()
@@ -78,12 +106,12 @@ fn scan(directory: &Path, expected: Architecture) -> Result<()> {
     Ok(())
 }
 
-fn format_matches_host(format: BinaryFormat) -> bool {
+fn host_binary_format() -> Option<BinaryFormat> {
     match std::env::consts::OS {
-        "macos" => format == BinaryFormat::MachO,
-        "linux" => format == BinaryFormat::Elf,
-        "windows" => format == BinaryFormat::Coff,
-        _ => true,
+        "macos" => Some(BinaryFormat::MachO),
+        "linux" => Some(BinaryFormat::Elf),
+        "windows" => Some(BinaryFormat::Pe),
+        _ => None,
     }
 }
 
@@ -95,5 +123,62 @@ fn expected_architecture(value: &str) -> Option<Architecture> {
         "arm" | "armv7" => Some(Architecture::Arm),
         "powerpc64" | "ppc64" => Some(Architecture::PowerPc64),
         _ => None,
+    }
+}
+
+#[cfg(all(test, windows, target_arch = "x86_64"))]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    const PE_DLL: &[u8] = include_bytes!("../tests/fixtures/x86_64-windows.dll");
+    const COFF_OBJECT: &[u8] = include_bytes!("../tests/fixtures/x86_64-windows.obj");
+
+    fn native_library(bytes: &[u8]) -> TempDir {
+        let temp = TempDir::new().unwrap();
+        let libs = temp.path().join("libs");
+        fs::create_dir(&libs).unwrap();
+        fs::write(libs.join("native.dll"), bytes).unwrap();
+        temp
+    }
+
+    fn expected(architecture: &str) -> ExpectedPackage {
+        ExpectedPackage {
+            name: "native".into(),
+            version: "1.0.0".into(),
+            r_major_minor: None,
+            platform: None,
+            architecture: Some(architecture.into()),
+        }
+    }
+
+    #[test]
+    fn accepts_x86_64_pe_dll_on_windows() {
+        let package = native_library(PE_DLL);
+
+        validate_native_code(package.path(), &expected("x86_64")).unwrap();
+    }
+
+    #[test]
+    fn reports_incompatible_pe_architecture() {
+        let package = native_library(PE_DLL);
+
+        let error = validate_native_code(package.path(), &expected("aarch64")).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not contain architecture Aarch64")
+        );
+    }
+
+    #[test]
+    fn reports_coff_as_an_incompatible_windows_format() {
+        let package = native_library(COFF_OBJECT);
+
+        let error = validate_native_code(package.path(), &expected("x86_64")).unwrap_err();
+
+        assert!(error.to_string().contains("format Coff, expected Pe"));
     }
 }
