@@ -97,3 +97,60 @@ fn expected_architecture(value: &str) -> Option<Architecture> {
         _ => None,
     }
 }
+
+#[cfg(all(test, windows, target_arch = "x86_64"))]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    const PE_DLL: &[u8] = include_bytes!("../tests/fixtures/x86_64-windows.dll");
+    const COFF_OBJECT: &[u8] = include_bytes!("../tests/fixtures/x86_64-windows.obj");
+
+    fn native_library(bytes: &[u8]) -> TempDir {
+        let temp = TempDir::new().unwrap();
+        let libs = temp.path().join("libs");
+        fs::create_dir(&libs).unwrap();
+        fs::write(libs.join("native.dll"), bytes).unwrap();
+        temp
+    }
+
+    fn expected(architecture: &str) -> ExpectedPackage {
+        ExpectedPackage {
+            name: "native".into(),
+            version: "1.0.0".into(),
+            r_major_minor: None,
+            platform: None,
+            architecture: Some(architecture.into()),
+        }
+    }
+
+    #[test]
+    fn accepts_x86_64_pe_dll_on_windows() {
+        let package = native_library(PE_DLL);
+
+        validate_native_code(package.path(), &expected("x86_64")).unwrap();
+    }
+
+    #[test]
+    fn reports_incompatible_pe_architecture() {
+        let package = native_library(PE_DLL);
+
+        let error = validate_native_code(package.path(), &expected("aarch64")).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not contain architecture Aarch64")
+        );
+    }
+
+    #[test]
+    fn reports_coff_as_an_incompatible_windows_format() {
+        let package = native_library(COFF_OBJECT);
+
+        let error = validate_native_code(package.path(), &expected("x86_64")).unwrap_err();
+
+        assert!(error.to_string().contains("format Coff, expected Pe"));
+    }
+}
