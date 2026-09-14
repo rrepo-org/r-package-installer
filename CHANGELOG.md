@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.1.2 - 2026-09-14
 
 - Remove byte-level private build-path rejection after source installation.
   Embedded paths can be harmless debug metadata, as in pak's bundled `zip.so`,
