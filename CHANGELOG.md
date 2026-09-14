@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.2 - 2026-09-14
+
+- Remove byte-level private build-path rejection after source installation.
+  Embedded paths can be harmless debug metadata, as in pak's bundled `zip.so`,
+  and do not reliably indicate runtime dependencies on the build directory.
+
 ## 0.1.1 - 2026-09-04
 
 - Accept PE images when validating native DLLs in Windows binary packages.

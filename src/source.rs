@@ -114,7 +114,6 @@ pub(crate) fn materialize_source(
             ));
         }
     }
-    reject_embedded_path(&package_root, build_root)?;
     Ok(package_root)
 }
 
@@ -159,34 +158,6 @@ fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
 
 fn terminate_tree(child: &mut GroupChild) {
     let _ = child.kill();
-}
-
-fn reject_embedded_path(root: &Path, forbidden: &Path) -> Result<()> {
-    let needle = forbidden.to_string_lossy();
-    if needle.is_empty() {
-        return Ok(());
-    }
-    scan_files(root, needle.as_bytes())
-}
-
-fn scan_files(directory: &Path, needle: &[u8]) -> Result<()> {
-    for entry in fs::read_dir(directory).at(directory)? {
-        let entry = entry.at(directory)?;
-        let path = entry.path();
-        let file_type = entry.file_type().at(&path)?;
-        if file_type.is_dir() {
-            scan_files(&path, needle)?;
-        } else if file_type.is_file() {
-            let bytes = fs::read(&path).at(&path)?;
-            if bytes.windows(needle.len()).any(|window| window == needle) {
-                return Err(Error::Incompatible(format!(
-                    "installed package embeds private build path in {}",
-                    path.display()
-                )));
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
