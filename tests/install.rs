@@ -9,9 +9,9 @@ use std::{
 
 use flate2::{Compression, write::GzEncoder};
 use r_package_installer::{
-    Artifact, BinaryArtifact, BinaryFormat, CacheKey, Digest, ExpectedPackage, InstallOutcome,
-    Installer, InstallerOptions, LibraryEntry, PrepareRequest, RecoveryAction, RecoveryPlan,
-    RemovalOutcome, SourceArtifact, SourceOptions, recover_package, scan_library,
+    Artifact, BinaryArtifact, CacheKey, Digest, ExpectedPackage, InstallOutcome, Installer,
+    InstallerOptions, LibraryEntry, PrepareRequest, RecoveryAction, RecoveryPlan, RemovalOutcome,
+    SourceArtifact, SourceOptions, recover_package, scan_library,
 };
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
@@ -57,10 +57,7 @@ fn binary_request(path: PathBuf, name: &str, version: &str) -> PrepareRequest {
         key: CacheKey::from_digest(digest),
         artifact_digest: digest,
         expected: expected(name, version),
-        artifact: Artifact::Binary(BinaryArtifact {
-            path,
-            format: BinaryFormat::Zip,
-        }),
+        artifact: Artifact::Binary(BinaryArtifact { path }),
     }
 }
 
@@ -74,6 +71,172 @@ fn package_tree(path: &Path, name: &str, version: &str, payload: &str) {
     .unwrap();
     fs::write(path.join("Meta/package.rds"), b"fake rds").unwrap();
     fs::write(path.join("R/value"), payload).unwrap();
+}
+
+fn binary_tar_bytes(escaping_link: bool) -> Vec<u8> {
+    let mut tar = tar::Builder::new(Vec::new());
+    append(
+        &mut tar,
+        "foo/DESCRIPTION",
+        b"Package: foo\nVersion: 1.0\nBuilt: R 4.6.1; test-platform; now; unix\n",
+    );
+    append(&mut tar, "foo/Meta/package.rds", b"fake rds");
+    append(&mut tar, "foo/R/value", b"payload");
+    if escaping_link {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o777);
+        tar.append_link(&mut header, "foo/escape", "../../outside")
+            .unwrap();
+    }
+    tar.into_inner().unwrap()
+}
+
+fn compress_tar(bytes: &[u8], xz: bool) -> Vec<u8> {
+    if xz {
+        let mut encoder = xz2::write::XzEncoder::new(Vec::new(), 6);
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    } else {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+}
+
+#[test]
+fn detects_binary_contents_independently_of_filename() {
+    for xz in [false, true] {
+        for filename in ["foo.tgz", "foo.zip", "download"] {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join(filename);
+            fs::write(&path, compress_tar(&binary_tar_bytes(false), xz)).unwrap();
+            let installer = Installer::new(temp.path().join("cache"));
+            let library = temp.path().join("library");
+            installer
+                .install(&binary_request(path, "foo", "1.0"), &library)
+                .unwrap();
+            assert_eq!(fs::read(library.join("foo/R/value")).unwrap(), b"payload");
+        }
+    }
+    let temp = TempDir::new().unwrap();
+    let zip = binary_zip(temp.path(), "foo", "1.0", "payload");
+    let path = temp.path().join("download.tgz");
+    fs::rename(zip, &path).unwrap();
+    Installer::new(temp.path().join("cache"))
+        .prepare(&binary_request(path, "foo", "1.0"))
+        .unwrap();
+}
+
+#[test]
+fn rejects_corrupt_compression_and_preserves_installed_package() {
+    for xz in [false, true] {
+        let good = compress_tar(&binary_tar_bytes(false), xz);
+        let mut corrupt = good.clone();
+        let index = corrupt.len() - if xz { 9 } else { 8 };
+        corrupt[index] ^= 0xff;
+        for bytes in [
+            good[..good.len() - 1].to_vec(),
+            good[..good.len() / 2].to_vec(),
+            corrupt,
+        ] {
+            let temp = TempDir::new().unwrap();
+            let installer = Installer::new(temp.path().join("cache"));
+            let library = temp.path().join("library");
+            let old = binary_zip(temp.path(), "foo", "0.9", "old");
+            installer
+                .install(&binary_request(old, "foo", "0.9"), &library)
+                .unwrap();
+            let path = temp.path().join("bad.tgz");
+            fs::write(&path, bytes).unwrap();
+            let request = binary_request(path.clone(), "foo", "1.0");
+            assert!(matches!(
+                installer.install(&request, &library),
+                Err(r_package_installer::Error::InvalidArchive(_))
+            ));
+            assert_eq!(fs::read(library.join("foo/R/value")).unwrap(), b"old");
+            // Retry the same key with valid bytes to prove failed preparation left no lock/object.
+            fs::write(&path, &good).unwrap();
+            let mut retry = binary_request(path, "foo", "1.0");
+            retry.key = request.key;
+            installer.install(&retry, &library).unwrap();
+        }
+    }
+}
+
+#[test]
+fn detected_tar_enforces_links_limits_and_identity() {
+    for xz in [false, true] {
+        for case in ["link", "limit", "identity", "version"] {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("download");
+            fs::write(&path, compress_tar(&binary_tar_bytes(case == "link"), xz)).unwrap();
+            let mut options = InstallerOptions::default();
+            if case == "limit" {
+                options.archive_limits.max_entries = 1;
+            }
+            let request = binary_request(
+                path,
+                if case == "identity" { "other" } else { "foo" },
+                if case == "version" { "2.0" } else { "1.0" },
+            );
+            assert!(
+                Installer::with_options(temp.path().join("cache"), options)
+                    .prepare(&request)
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn distinguishes_unsupported_and_truncated_signatures() {
+    for bytes in [b"BZh91".as_slice(), b"\x28\xb5\x2f\xfd", b"not an archive"] {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("download");
+        fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            Installer::new(temp.path().join("cache")).prepare(&binary_request(path, "foo", "1.0")),
+            Err(r_package_installer::Error::UnsupportedArchiveFormat { .. })
+        ));
+    }
+    for bytes in [
+        b"".as_slice(),
+        b"\xfd7z",
+        b"\x1f",
+        b"PK\x03",
+        b"PK\x03\x04broken",
+    ] {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("download");
+        fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            Installer::new(temp.path().join("cache")).prepare(&binary_request(path, "foo", "1.0")),
+            Err(r_package_installer::Error::InvalidArchive(_))
+        ));
+    }
+}
+
+#[test]
+fn compression_trailer_validation_remains_bounded() {
+    for xz in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let mut tar = binary_tar_bytes(false);
+        // Padding after the tar end marker must still count against the read limit.
+        tar.resize(2 * 1024 * 1024, 0);
+        let path = temp.path().join("download");
+        fs::write(&path, compress_tar(&tar, xz)).unwrap();
+        let mut options = InstallerOptions::default();
+        options.archive_limits.max_entries = 3;
+        options.archive_limits.max_expanded_size = 1024;
+        let error = Installer::with_options(temp.path().join("cache"), options)
+            .prepare(&binary_request(path, "foo", "1.0"))
+            .unwrap_err();
+        assert!(
+            matches!(error, r_package_installer::Error::InvalidArchive(message) if message.contains("decompressed tar exceeds configured limit"))
+        );
+    }
 }
 
 fn recovery_lock(library: &Path, package: &str, state: &str) -> PathBuf {

@@ -79,22 +79,13 @@ pub struct ExpectedPackage {
     pub architecture: Option<String>,
 }
 
-/// A supported prebuilt archive container.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryFormat {
-    /// A ZIP package archive, normally used by Windows binary packages.
-    Zip,
-    /// A gzip-compressed tar package archive.
-    TarGz,
-}
-
 /// A prebuilt R package archive.
+///
+/// ZIP, gzip-compressed tar, and XZ-compressed tar are detected from file contents.
 #[derive(Debug, Clone)]
 pub struct BinaryArtifact {
     /// Path to the predownloaded archive.
     pub path: PathBuf,
-    /// Archive container format.
-    pub format: BinaryFormat,
 }
 
 /// Per-child cancellation state. Cancelling does not affect other calls.

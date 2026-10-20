@@ -1,6 +1,6 @@
 [package]
 name = "r-package-installer"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Transactional installation of predownloaded R package artifacts"
@@ -30,6 +30,7 @@ r-description-parser = "0.2"
 sha2 = "0.10"
 tar = "0.4"
 thiserror = "2"
+xz2 = "0.1"
 zip = { version = "5", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]

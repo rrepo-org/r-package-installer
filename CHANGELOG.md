@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.2.0 - Unreleased
+
+- Automatically detect ZIP, gzip-tar, and XZ-tar binary archives by magic bytes,
+  including XZ-compressed macOS binaries named `.tgz` (RRE-97).
+- Breaking: remove `BinaryFormat` and `BinaryArtifact::format`. Callers now
+  construct `BinaryArtifact { path }` and remove `BinaryFormat` imports.
+- Add `Error::UnsupportedArchiveFormat` for unrecognized signatures; recognized
+  but corrupt or truncated archives return `InvalidArchive`.
+- Validate gzip/XZ stream integrity through compression trailers under the
+  existing decompression limits.
+
 ## 0.1.2 - 2026-09-14
 
 - Remove byte-level private build-path rejection after source installation.

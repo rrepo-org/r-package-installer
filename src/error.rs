@@ -26,7 +26,13 @@ pub enum Error {
         /// Actual SHA-256 digest.
         actual: String,
     },
-    /// An archive failed structural or resource-limit validation.
+    /// The artifact signature does not identify a supported binary archive.
+    #[error("unsupported archive format (signature: {signature:02x?})")]
+    UnsupportedArchiveFormat {
+        /// Leading bytes of the artifact, up to six bytes.
+        signature: Vec<u8>,
+    },
+    /// An archive failed structural, compression integrity, or resource-limit validation.
     #[error("invalid archive: {0}")]
     InvalidArchive(String),
     /// A package metadata file or installed-tree marker was invalid.
