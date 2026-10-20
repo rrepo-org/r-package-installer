@@ -10,7 +10,8 @@ artifact; callers may safely schedule independent calls from multiple threads.
 
 ## Boundary
 
-- Binary ZIP and gzip-tar archives are safely extracted and validated in Rust.
+- Binary ZIP, gzip-tar, and XZ-tar archives are detected from their contents,
+  safely extracted, and validated in Rust, regardless of filename extension.
 - Source archives are installed by `R CMD INSTALL` into a private cache build
   library. Rust does not reproduce any R source-install behavior.
 - Complete package trees are published into an immutable caller-owned cache.
@@ -28,7 +29,7 @@ Add the crate to your project:
 
 ```toml
 [dependencies]
-r-package-installer = "0.1"
+r-package-installer = "0.2"
 ```
 
 The caller downloads the artifact, computes its SHA-256 digest, and supplies
@@ -38,7 +39,7 @@ an authoritative package identity and cache key:
 use std::path::PathBuf;
 
 use r_package_installer::{
-    Artifact, BinaryArtifact, BinaryFormat, CacheKey, Digest, ExpectedPackage,
+    Artifact, BinaryArtifact, CacheKey, Digest, ExpectedPackage,
     Installer, PrepareRequest,
 };
 
@@ -57,7 +58,6 @@ let request = PrepareRequest {
     },
     artifact: Artifact::Binary(BinaryArtifact {
         path: PathBuf::from("example_1.0.0.zip"),
-        format: BinaryFormat::Zip,
     }),
 };
 

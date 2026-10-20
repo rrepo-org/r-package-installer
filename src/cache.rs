@@ -210,10 +210,7 @@ fn artifact_path(artifact: &Artifact) -> &Path {
 
 fn private_artifact(artifact: &Artifact, path: PathBuf) -> Artifact {
     match artifact {
-        Artifact::Binary(value) => Artifact::Binary(crate::BinaryArtifact {
-            path,
-            format: value.format,
-        }),
+        Artifact::Binary(_) => Artifact::Binary(crate::BinaryArtifact { path }),
         Artifact::Source(value) => {
             let mut value = value.clone();
             value.path = path;

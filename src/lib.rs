@@ -20,7 +20,7 @@ pub use cache::Cache;
 pub use error::{Error, Result};
 pub use library::{recover_package, remove_package, scan_library};
 pub use model::{
-    ArchiveLimits, Artifact, BinaryArtifact, BinaryFormat, CacheEntry, CacheKey, CacheLockPolicy,
+    ArchiveLimits, Artifact, BinaryArtifact, CacheEntry, CacheKey, CacheLockPolicy,
     CancellationToken, Digest, ExpectedPackage, InstallOutcome, InstalledPackage, InstallerOptions,
     LibraryEntry, LockMetadata, LockPolicy, PackageMetadata, PrepareRequest, RecoveryAction,
     RecoveryPlan, RemovalOutcome, SourceArtifact, SourceOptions,

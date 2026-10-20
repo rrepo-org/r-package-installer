@@ -7,13 +7,47 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
+use xz2::read::XzDecoder;
 
-use crate::{
-    ArchiveLimits, BinaryArtifact, BinaryFormat, Error, ExpectedPackage, Result, error::IoContext,
-};
+use crate::{ArchiveLimits, BinaryArtifact, Error, ExpectedPackage, Result, error::IoContext};
 
 use self::tar_compat::LinkSizeFix;
+
+#[derive(Clone, Copy)]
+enum BinaryFormat {
+    Zip,
+    TarGz,
+    TarXz,
+}
+
+fn detect_format(path: &Path) -> Result<BinaryFormat> {
+    let mut signature = Vec::new();
+    File::open(path)
+        .at(path)?
+        .take(6)
+        .read_to_end(&mut signature)
+        .at(path)?;
+    let signatures: &[(&[u8], BinaryFormat)] = &[
+        (b"PK\x03\x04", BinaryFormat::Zip),
+        (b"PK\x05\x06", BinaryFormat::Zip),
+        (b"\x1f\x8b", BinaryFormat::TarGz),
+        (b"\xfd7zXZ\0", BinaryFormat::TarXz),
+    ];
+    for &(magic, format) in signatures {
+        if signature.starts_with(magic) {
+            return Ok(format);
+        }
+    }
+    if signature.is_empty()
+        || signatures
+            .iter()
+            .any(|(magic, _)| magic.starts_with(&signature))
+    {
+        return Err(Error::InvalidArchive("truncated archive signature".into()));
+    }
+    Err(Error::UnsupportedArchiveFormat { signature })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -39,9 +73,11 @@ pub(crate) fn extract_binary(
     limits: &ArchiveLimits,
 ) -> Result<PathBuf> {
     fs::create_dir_all(destination).at(destination)?;
-    match artifact.format {
+    match detect_format(&artifact.path)? {
         BinaryFormat::Zip => extract_zip(&artifact.path, destination, expected, limits)?,
-        BinaryFormat::TarGz => extract_tar(&artifact.path, destination, expected, limits)?,
+        format @ (BinaryFormat::TarGz | BinaryFormat::TarXz) => {
+            extract_tar(&artifact.path, destination, expected, limits, format)?;
+        }
     }
     Ok(destination.join(&expected.name))
 }
@@ -134,16 +170,20 @@ fn extract_zip(
     materialize_links(destination, &manifest)
 }
 
-fn tar_archive(
-    path: &Path,
-    limits: &ArchiveLimits,
-) -> Result<tar::Archive<LinkSizeFix<ReadLimit<GzDecoder<File>>>>> {
+type TarArchive = tar::Archive<LinkSizeFix<ReadLimit<Box<dyn Read>>>>;
+
+fn tar_archive(path: &Path, limits: &ArchiveLimits, format: BinaryFormat) -> Result<TarArchive> {
     let file = File::open(path).at(path)?;
+    let decoder: Box<dyn Read> = match format {
+        BinaryFormat::TarGz => Box::new(MultiGzDecoder::new(file)),
+        BinaryFormat::TarXz => Box::new(XzDecoder::new_multi_decoder(file)),
+        BinaryFormat::Zip => unreachable!("ZIP uses its own extraction path"),
+    };
     let metadata_allowance = (limits.max_entries as u64)
         .saturating_mul(1024)
         .saturating_add(1024 * 1024);
     Ok(tar::Archive::new(LinkSizeFix::new(ReadLimit::new(
-        GzDecoder::new(file),
+        decoder,
         limits.max_expanded_size.saturating_add(metadata_allowance),
     ))))
 }
@@ -153,8 +193,9 @@ fn extract_tar(
     destination: &Path,
     expected: &ExpectedPackage,
     limits: &ArchiveLimits,
+    format: BinaryFormat,
 ) -> Result<()> {
-    let mut archive = tar_archive(archive_path, limits)?;
+    let mut archive = tar_archive(archive_path, limits, format)?;
     let mut manifest = Vec::new();
     for entry in archive
         .entries()
@@ -205,6 +246,10 @@ fn extract_tar(
             target,
         });
     }
+    // Tar iteration stops at its end marker, before compression trailers may be read.
+    // Drain through the same limiter to validate checksums and detect truncation.
+    io::copy(&mut archive.into_inner(), &mut io::sink())
+        .map_err(|error| Error::InvalidArchive(error.to_string()))?;
     validate_manifest(
         &manifest,
         expected,
@@ -212,7 +257,7 @@ fn extract_tar(
         fs::metadata(archive_path).at(archive_path)?.len(),
     )?;
 
-    let mut archive = tar_archive(archive_path, limits)?;
+    let mut archive = tar_archive(archive_path, limits, format)?;
     for (entry, item) in archive
         .entries()
         .map_err(|error| Error::InvalidArchive(error.to_string()))?
